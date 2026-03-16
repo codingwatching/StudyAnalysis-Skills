@@ -1,5 +1,6 @@
 import os
 import sys
+sys.dont_write_bytecode = True
 import subprocess
 import argparse
 import tempfile
@@ -9,6 +10,7 @@ import zipfile
 import shutil
 import io
 import threading
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -96,23 +98,7 @@ class Config:
         return os.path.dirname(os.path.abspath(__file__))
 
     @staticmethod
-    def get_config_dir():
-        path = os.path.join(Config.get_script_dir(), "..", "config")
-        os.makedirs(path, exist_ok=True)
-        return path
-
-    @staticmethod
-    def get_browser_config_path():
-        return os.path.join(Config.get_config_dir(), "browser_path.txt")
-    
-    @staticmethod
-    def get_output_path():
-        return os.path.join(Config.get_config_dir(), "raw_content.txt")
-
-    @staticmethod
     def get_browser_path():
-        config_file = Config.get_browser_config_path()
-        
         # Cross-platform default paths
         if IS_WINDOWS:
             default_paths = [
@@ -138,29 +124,11 @@ class Config:
                 "/usr/local/bin/google-chrome"
             ]
         
-        def read_path():
-            if not os.path.exists(config_file): return None
-            with open(config_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"): return line
-            return None
-
-        current = read_path()
-        if current: return current
-
-        detected = next((p for p in default_paths if os.path.exists(p)), default_paths[0])
-        
-        # Write default
-        content = f"""# Browser Configuration
-# Please paste your browser executable path below:
-{detected}
-"""
-        try:
-            with open(config_file, "w", encoding="utf-8") as f: f.write(content)
-        except: pass
-        
-        return detected
+        explicit = os.getenv("KA_BROWSER_PATH", "").strip()
+        if explicit and os.path.exists(explicit):
+            return explicit
+        detected = next((p for p in default_paths if os.path.exists(p)), "")
+        return detected or None
 
 # ==========================================
 # LOGGING
@@ -288,10 +256,40 @@ class ContentParser:
             except (UnicodeEncodeError, UnicodeDecodeError):
                 pass
 
+        # Parse HTML with BeautifulSoup for advanced cleaning
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # Remove script, style, and other non-content tags
+        for tag in soup(["script", "style", "nav", "footer", "iframe", "noscript"]):
+            tag.decompose()
+
+        # Remove common ad containers by class/id patterns
+        ad_patterns = [
+            'ad', 'ads', 'advertisement', 'banner', 'sponsor', 'promo',
+            'sidebar', 'related', 'recommend', 'popup', 'modal',
+            'share', 'social', 'comment', 'disqus', 'newsletter',
+            'subscription', 'cookie', 'gdpr', 'consent'
+        ]
+
+        for pattern in ad_patterns:
+            # Remove by class
+            for elem in soup.find_all(class_=re.compile(pattern, re.IGNORECASE)):
+                elem.decompose()
+            # Remove by id
+            for elem in soup.find_all(id=re.compile(pattern, re.IGNORECASE)):
+                elem.decompose()
+
+        # Remove elements with common ad attributes
+        for elem in soup.find_all(attrs={"data-ad": True}):
+            elem.decompose()
+        for elem in soup.find_all(attrs={"data-advertisement": True}):
+            elem.decompose()
+
+        # Convert back to HTML string for html2text processing
+        cleaned_html = str(soup)
+
         if not html2text:
             log("html2text not installed. Falling back to simple text extraction.")
-            soup = BeautifulSoup(html, 'html.parser')
-            for s in soup(["script", "style", "nav", "footer", "iframe"]): s.decompose()
             return soup.get_text(separator='\n', strip=True)
 
         h = html2text.HTML2Text()
@@ -299,37 +297,120 @@ class ContentParser:
         h.ignore_images = False
         h.body_width = 0 # No wrapping
         h.protect_links = True
-        h.base_url = base_url
-        return h.handle(html)
+        if hasattr(h, 'base_url'):
+            h.base_url = base_url
+        markdown = h.handle(cleaned_html)
+
+        # Post-process markdown to remove noise patterns
+        lines = markdown.split('\n')
+        cleaned_lines = []
+
+        noise_keywords = [
+            '关注', '推荐', '热榜', '专栏', '付费咨询', '知学堂',
+            '切换模式', '登录', '注册', '下载', 'App', '验证码',
+            '扫码', '开通', '无障碍', '分享', '点赞', '收藏',
+            '评论', '转发', '订阅', '关注我们', '加入我们',
+            '广告', '赞助', '合作', '联系我们'
+        ]
+
+        for line in lines:
+            line_stripped = line.strip()
+            # Skip empty lines
+            if not line_stripped:
+                cleaned_lines.append(line)
+                continue
+
+            # Check if line contains noise keywords (but not as part of real content)
+            is_noise = False
+            if len(line_stripped) < 50:  # Short lines are more likely to be UI elements
+                for keyword in noise_keywords:
+                    if keyword in line_stripped and len(line_stripped) < 30:
+                        is_noise = True
+                        break
+
+            if not is_noise:
+                cleaned_lines.append(line)
+
+        return '\n'.join(cleaned_lines)
 
     def extract_metadata(self, html):
         soup = BeautifulSoup(html, 'html.parser')
-        title = soup.title.string if soup.title else "Untitled"
-        # Try to find author (Generic)
-        author = "Unknown"
-        meta_author = soup.find("meta", attrs={"name": "author"})
-        if meta_author: author = meta_author.get("content")
+        def clean_meta_text(value):
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if text.lower() in {"", "none", "null", "untitled", "unknown"}:
+                return ""
+            return text
+
+        def first_meta_content(*attribute_sets):
+            for attrs in attribute_sets:
+                node = soup.find("meta", attrs=attrs)
+                if not node:
+                    continue
+                text = clean_meta_text(node.get("content"))
+                if text:
+                    return text
+            return ""
+
+        def first_heading_text():
+            for tag_name in ("h1", "h2"):
+                node = soup.find(tag_name)
+                if not node:
+                    continue
+                text = clean_meta_text(node.get_text(" ", strip=True))
+                if text:
+                    return text
+            return ""
+
+        title = clean_meta_text(soup.title.string if soup.title else "")
+        if not title:
+            title = first_meta_content(
+                {"property": "og:title"},
+                {"name": "og:title"},
+                {"property": "twitter:title"},
+                {"name": "twitter:title"},
+                {"itemprop": "headline"},
+                {"name": "title"},
+            )
+        if not title:
+            title = first_heading_text()
+        if not title:
+            title = "Untitled"
+
+        author = first_meta_content(
+            {"name": "author"},
+            {"property": "author"},
+            {"name": "article:author"},
+            {"property": "article:author"},
+            {"property": "og:site_name"},
+        ) or "Unknown"
         return f"Title: {title}\nAuthor: {author}\nDate: {time.strftime('%Y-%m-%d')}\n"
 
     def process_url(self, url):
         log(f"Fetching: {url}")
         html = ""
         
-        try:
-            resp = requests.get(url, headers=self.headers, timeout=15)
-            if resp.status_code in [403, 429, 503]:
-                log(f"Requests {resp.status_code}. Invoking DrissionPage.")
-                with self.drission_lock:
-                    html, err = BrowserDriver.fetch_html(url)
-                if not html: return f"Error: {err}"
-            else:
-                resp.raise_for_status()
-                html = resp.text
-        except Exception as e:
-            log(f"Requests failed: {e}. Invoking DrissionPage.")
+        # [LCS-FIX] 2026-03-16: Force DrissionPage for Zhihu to bypass anti-crawling
+        if "zhihu.com" in url:
+            log("Zhihu URL detected. Skipping requests and forcing DrissionPage.")
             with self.drission_lock:
                 html, err = BrowserDriver.fetch_html(url)
             if not html: return f"Error: {err}"
+        else:
+            try:
+                resp = requests.get(url, headers=self.headers, timeout=15)
+                if resp.status_code in [403, 429, 503]:
+                    log(f"Requests {resp.status_code}. Invoking DrissionPage.")
+                    with self.drission_lock:
+                        html, err = BrowserDriver.fetch_html(url)
+                    if not html: return f"Error: {err}"
+                else:
+                    resp.raise_for_status()
+                    html = resp.text
+            except Exception as e:
+                log(f"Requests failed: {e}. Invoking DrissionPage.")
+                with self.drission_lock:
+                    html, err = BrowserDriver.fetch_html(url)
+                if not html: return f"Error: {err}"
 
         meta = self.extract_metadata(html)
         markdown = self.clean_html(html, base_url=url)
@@ -846,6 +927,8 @@ class ReportGenerator:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("inputs", nargs="+", help="One or more URLs or Local File Paths")
+    parser.add_argument("--output", default="raw_content.txt", help="Path to write the raw content text file")
+    parser.add_argument("--no-reports", action="store_true", help="Do not generate HTML/Feishu report side files")
     args = parser.parse_args()
     
     cp = ContentParser()
@@ -853,8 +936,10 @@ def main():
     
     log(f"Starting ingestion for {len(args.inputs)} items...", style="cyan")
     
-    # Define output path early
-    output_path = Config.get_output_path()
+    output_path = os.path.abspath(args.output)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     
     results_map = {}
     max_workers = os.cpu_count() or 4
@@ -937,21 +1022,18 @@ def main():
         theme = "ink"
         log(f"Detected Guoxue/Cultural content. Switching to 'Ink & Zen' theme.", "magenta")
 
-    # Generate Glassmorphism 2.0 HTML report
-    rg = ReportGenerator(title="Multi-Source Knowledge Audit", theme=theme)
-    html_report = rg.generate_html(raw_contents, conflicts)
-    html_report_path = output_path.replace(".txt", ".html")
-    with open(html_report_path, "w", encoding="utf-8") as f:
-        f.write(html_report)
-    log_success(f"Glassmorphism 2.0 HTML report ({theme}) saved to: {html_report_path}")
+    if not args.no_reports:
+        rg = ReportGenerator(title="Multi-Source Knowledge Audit", theme=theme)
+        html_report = rg.generate_html(raw_contents, conflicts)
+        html_report_path = str(Path(output_path).with_suffix(".html"))
+        Path(html_report_path).write_text(html_report, encoding="utf-8")
+        log_success(f"HTML report ({theme}) saved to: {html_report_path}")
 
-    # Generate Feishu-compatible Markdown report
-    fg = FeishuMarkdownGenerator(title="Multi-Source Knowledge Audit")
-    feishu_md = fg.generate_md(raw_contents, conflicts)
-    feishu_path = output_path.replace(".txt", "_feishu.md")
-    with open(feishu_path, "w", encoding="utf-8") as f:
-        f.write(feishu_md)
-    log_success(f"Feishu-compatible Markdown saved to: {feishu_path}")
+        fg = FeishuMarkdownGenerator(title="Multi-Source Knowledge Audit")
+        feishu_md = fg.generate_md(raw_contents, conflicts)
+        feishu_path = str(Path(output_path).with_suffix("")) + "_feishu.md"
+        Path(feishu_path).write_text(feishu_md, encoding="utf-8")
+        log_success(f"Feishu Markdown saved to: {feishu_path}")
 
     # Combine results
     final_output = ""

@@ -1,97 +1,135 @@
 ---
 name: knowledge-absorber
-description: 深度解析链接、文档或代码，生成“全能导师级”的教学笔记（零基础直达精通）。具备“真理锚定”校验能力，自动识别幻觉与过时信息。
-tags: ["learning","学习","analysis","分析","documentation","文档","knowledge-base","知识库","architecture","知识吸收","knowledge-absorber","verification",]
-version: 4.4.0
+description: 深度解析链接、文档或代码，生成”全能导师级”的教学笔记（零基础直达精通）。具备”真理锚定”校验能力，自动识别幻觉与过时信息。支持国学风格渲染，自动清理广告和无用内容。
+tags: [“learning”,”学习”,”analysis”,”分析”,”documentation”,”文档”,”knowledge-base”,”知识库”,”architecture”,”知识吸收”,”knowledge-absorber”,”verification”,”国学”,”classical-chinese”]
+version: 4.5.0
 ---
 
-# 核心流程 (Core Workflow)
+# 用法
 
-本技能采用 **三级加载机制 (Level-3 Loading)** 配合 **真理锚定协议 (Truth Anchoring Protocol)**。请严格按照以下步骤执行。
+把链接、文档、图片或代码整理成一份可学习、可搜索、可继续提问的学习成品，并输出：
+
+- `knowledge_card.md`
+- `knowledge_card.interactive.html`
+
+只需要一条命令：
+
+```bash
+python scripts/run_full_pipeline.py “<链接或本地文件路径>” [“<更多链接或文件路径>”]
+```
+
+示例：
+
+```bash
+python scripts/run_full_pipeline.py “https://example.com/article”
+python scripts/run_full_pipeline.py “E:\资料\AI导论.pdf”
+python scripts/run_full_pipeline.py “E:\资料\架构图.png”
+python scripts/run_full_pipeline.py “E:\repo\main.py”
+python scripts/run_full_pipeline.py “https://example.com/article” “E:\资料\补充说明.pdf”
+```
+
+也支持这种自然语言写法：
+
+```bash
+python scripts/run_full_pipeline.py “学习这个 https://example.com/article”
+```
+
+# 核心流程
+
+本技能采用 **真理锚定协议 (Truth Anchoring Protocol)** 确保内容准确性。
 
 ## 第一步：智能摄取 (Content Ingestion)
 
-先运行脚本获取干净的 Markdown 数据。脚本会自动清洗 HTML 噪音并处理多模态内容（PDF/OCR）。
+运行脚本获取干净的内容。脚本会自动清洗 HTML 噪音、广告和无用内容，并处理多模态内容（PDF/OCR）。
 
-1.  **运行摄取脚本**：
-    - **Command**: `python [SKILL_PATH]/scripts/content_ingester.py "INPUT_URL_OR_PATH"`
-    - **依赖自愈**: 运行前检查依赖。若发现 `ImportError`，**立即自动执行** `pip install -r [SKILL_PATH]/requirements.txt`，无需询问用户。
-
-2.  **读取结果**：
-    - 读取 `[SKILL_PATH]/config/raw_content.txt`。
-    - 该文件已通过 `html2text` 清洗，可直接用于分析。
+**清理机制**：
+- 自动移除广告、导航、页脚、社交分享等UI元素
+- 过滤包含噪音关键词的短文本（登录、注册、下载、关注等）
+- 识别并移除广告容器（通过class/id模式匹配）
+- 不保留明显的UI元素和营销内容
+- 不保留”谢谢大佬的支持”等打赏提示
+- 不保留页面导航和推荐链接
 
 ## 第二步：真理锚定 (Truth Anchoring)
 
-**“不要轻信任何文本，哪怕它看起来很专业。”**
-在加载导师人格之前，必须先对摄取的内容进行**准确性校验**。
+**”不要轻信任何文本，哪怕它看起来很专业。”**
 
-1.  **提取核心主张 (Claim Extraction)**：
-    - 快速扫描 `raw_content.txt`。
-    - **提取文件中提到的所有关键事实性主张**（Key Factual Claims）。
-      - _重点关注_：具体数据、代码API用法、历史事件、绝对化论断（"总是"、"从未"）。
+在生成内容之前，必须先对摄取的内容进行**准确性校验**。
 
-2.  **联网审计 (Web Audit)**：
-    - **Tool**: 调用 `WebSearch`。
-    - **Query**: 针对每个主张构造验证性搜索（例如："React 19 useEffect changes 2026"）。
-    - **Constraint**: 必须包含当前年份（2026）以确保时效性。
+**验证流程**：
+1. **提取核心主张**：识别文中所有关键事实性主张（具体数据、API用法、历史事件、绝对化论断）
+2. **联网审计**：调用 `WebSearch` 验证每个主张，搜索必须包含当前年份（2026）以确保时效性
+3. **生成校准报告**：构建”红队报告”，标注错误、过时或有争议的内容
+4. **显式标注**：在最终输出中明确标注所有不确定或有争议的信息
 
-3.  **生成校准报告 (Calibration Report)**：
-    - 在心中构建一个“红队报告”。
-    - 如果发现原文有误、过时或存在争议，**必须**在后续生成的教学笔记中显式标注。
+**验证要求**：
+- 每个关键主张都必须经过搜索验证
+- 不得直接使用未经验证的原文内容
+- 不得忽略明显的时效性问题（如”2020年最新”）
+- 不得省略对绝对化论断的验证（”总是”、”从不”、”必须”）
+- 不得在发现错误后不标注就直接使用
 
-## 第三步：加载导师人格 (Load Persona)
+**标注规范**：
+- 过时信息必须标注”[已过时]”
+- 有争议内容必须标注”[存在争议]”
+- 无法确认的内容必须标注”[待确认]”
 
-读取系统提示词以激活“首席认知架构师”人格。
+## 第三步：生成教学内容
 
-1.  **加载 Prompt**：
-    - **Command**: `cat [SKILL_PATH]/references/system_prompt.md`
-    - **注意**：将读取到的内容作为 System Prompt 注入当前上下文。
+根据清洗后的内容和校准报告，生成多模态输出。
 
-## 第四步：生成教学内容 (Generate Content)
+**内容适配**：
+- **技术类**：使用现代清爽风格（Apple Design 风格）
+- **国学/人文类**：使用水墨国学风格（传统中文字体、水墨背景、印章装饰）
 
-**本步骤适用于所有领域的知识（技术、国学、学术、商业）。**
+**国学风格触发条件**：
+当标题、来源、标签或内容前几段包含以下任一关键词时，自动应用国学风格：
+- **经典文献**：论语、庄子、道德经、史记、诗经、易经、孟子、荀子、春秋、左传、礼记、周易、尚书、大学、中庸
+- **学派思想**：国学、古文、佛、儒、道、哲学、人文、儒家、道家、佛家、法家、墨家、兵家、禅宗、理学、心学、玄学
+- **历史人物**：孔子、老子、孟子、庄子、荀子、墨子、韩非子、朱熹、王阳明、程颐、程颢
+- **文学体裁**：古诗、词、赋、骈文、散文、文言文
+- **其他**：经史子集、四书五经、诸子百家、传统文化
 
-根据 `raw_content.txt` 的内容、`system_prompt.md` 的指示以及**第二步的校准报告**，生成多模态输出。
+## 第四步：质量验收 (Quality Assurance)
 
-1.  **结构化输出 (必填项)**：
-    - **单一真理源**：文章结构、模块定义、透镜应用**严格遵循 `system_prompt.md` 中的 [Construct Narrative] 章节定义**。
-    - **严禁偏差**：不要自行发明模块，也不要遗漏 System Prompt 中标记为 `[Mandatory]` 的任何部分。
+**交付前必须确认以下项目：**
 
-2.  **生成与写入**：
-    - 必须同时生成 Markdown 和 HTML 文件。
-    - 写入位置：项目根目录下的独立文件夹 `knowledge_{YYYYMMDD}_{Title}/`
-    - 文件名格式：`knowledge_{YYYYMMDD}_{Title}.md/html`
-    - **内容适配**：
-        - **技术类**：使用 Preset A（现代清爽）。
-        - **国学/人文类**：使用 Preset B（水墨清茶）。
+1. ✅ HTML 包含 `<script>` 搜索逻辑
+2. ✅ 国学模式下使用传统中文字体（宋体、思源宋体）和水墨风格
+3. ✅ 包含 Mermaid 认知地图
+4. ✅ 包含 5-8 个 FAQ
+5. ✅ 内容已清理干净（无广告、无UI元素、无打赏提示）
+6. ✅ 所有关键主张经过真理锚定验证
+7. ✅ 不确定内容有明确标注
 
-## 第五步：质量验收 (Quality Assurance) [New]
+**不得出现以下情况**：
+- 输出包含广告或营销内容的HTML
+- 输出未经验证的事实性主张
+- 国学模式下使用现代西文字体
+- 省略搜索功能
+- 省略Mermaid图表
 
-**在向用户交付前，必须自检以下项：**
-1.  [ ] HTML 是否包含 `<script>` 搜索逻辑？（参照 `system_prompt.md` 组件库）
-2.  [ ] 国学模式下，是否使用了“扪心自问”和“藏经阁”标题？（参照 `system_prompt.md` 映射表）
-3.  [ ] 是否包含 Mermaid 认知地图？
-4.  [ ] 是否包含 5-8 个自测题？
+**若任一项不符合要求，必须重新生成。**
 
-**若任一项缺失，必须重新生成。**
+# 输出位置与文件
 
-# 何时调用 (When to use)
+脚本会在 `outputs/knowledge_YYYYMMDD_*` 下生成一个输出文件夹，且最终只保留两个文件：
 
-当出现以下任一场景时，请立即激活本技能：
+- `knowledge_card.md`
+- `knowledge_card.interactive.html`
 
-1.  **显式学习指令**：
-    - 用户明确要求：“学习这个”、“深度分析”、“解析链接”、“解释这个概念”、“存入知识库”。
-    - 关键词触发：只要用户提到“学习”或“分析”配合某个对象，必须激活。
+# 导师模式（交互 HTML 可选）
 
-2.  **复杂多模态输入**：
-    - 用户提供了一个或多个 URL 链接。
-    - 用户上传了文档文件（PDF, Word, Markdown, TXT）。
-    - 用户上传了图片（PNG, JPG），且内容包含大量文字或图表。
+导师模式需要本地 relay 才能在浏览器里调用模型：
 
-3.  **代码深度解析**：
-    - 用户选中或上传了代码文件，并询问：“这段代码是怎么跑的？”、“架构是怎样的？”。
+- `python scripts/mentor_relay.py`（默认 `http://127.0.0.1:8760`）
 
-4.  **隐式教学需求**：
-    - 用户表示困惑：“我不理解这个概念”、“太难了，看不懂”。
-    - 用户需要降维打击：“用大白话解释一下”、“给个小白能懂的例子”。
+如果只是阅读/搜索正文，不需要启动 relay。
+
+# 支持的输入
+
+- URL 链接
+- PDF / Word / Markdown / TXT
+- PNG / JPG / JPEG / WEBP
+- Python / JavaScript / TypeScript / Java / C / C++ / Go / Rust 等代码文件
+- 一次传入多个链接或文件
